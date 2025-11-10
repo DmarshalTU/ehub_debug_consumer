@@ -341,43 +341,46 @@ async fn run() -> Result<()> {
 
     // Wait for all consumer tasks - keep running forever
     info!("All consumer tasks started. Application will run indefinitely...");
+    info!("Waiting for shutdown signal (SIGTERM/SIGINT)...");
     
     // Wait for a shutdown signal (SIGTERM in Kubernetes, Ctrl+C locally)
     use tokio::signal;
     
-    // In Kubernetes, pods receive SIGTERM when being terminated
-    // We'll wait for either SIGTERM or SIGINT (Ctrl+C)
-    tokio::select! {
-        _ = signal::ctrl_c() => {
-            info!("Received SIGINT (Ctrl+C) - shutting down...");
+    // Listen for both SIGTERM (Kubernetes) and SIGINT (Ctrl+C)
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())
+            .context("Failed to register SIGTERM handler")?;
+        let mut sigint = signal(SignalKind::interrupt())
+            .context("Failed to register SIGINT handler")?;
+        
+        tokio::select! {
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM - shutting down gracefully...");
+            }
+            _ = sigint.recv() => {
+                info!("Received SIGINT (Ctrl+C) - shutting down gracefully...");
+            }
+            _ = signal::ctrl_c() => {
+                info!("Received Ctrl+C - shutting down gracefully...");
+            }
         }
-        _ = async {
-            // Also listen for SIGTERM (Kubernetes sends this)
-            #[cfg(unix)]
-            {
-                use tokio::signal::unix::{signal, SignalKind};
-                let mut sigterm = signal(SignalKind::terminate()).ok();
-                if let Some(mut sigterm) = sigterm {
-                    sigterm.recv().await;
-                    info!("Received SIGTERM - shutting down...");
-                } else {
-                    // If we can't listen for SIGTERM, wait forever
-                    std::future::pending::<()>().await;
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                // On non-Unix, just wait forever
-                std::future::pending::<()>().await;
-            }
-        } => {}
+    }
+    
+    #[cfg(not(unix))]
+    {
+        // On non-Unix platforms, just wait for Ctrl+C
+        signal::ctrl_c().await
+            .context("Failed to register Ctrl+C handler")?;
+        info!("Received Ctrl+C - shutting down gracefully...");
     }
     
     // Cancel reporter
     reporter_handle.abort();
     
     // Wait a bit for tasks to finish gracefully
-    info!("Waiting for tasks to finish gracefully...");
+    info!("Waiting for tasks to finish gracefully (5 seconds)...");
     tokio::time::sleep(Duration::from_secs(5)).await;
     
     info!("Application shutting down...");
