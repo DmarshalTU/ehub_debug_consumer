@@ -155,10 +155,16 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] run() function started");
+    let _ = std::io::stderr().flush();
 
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] About to log startup banner");
+    let _ = std::io::stderr().flush();
     info!("==========================================");
     info!("Azure Event Hubs Debug Consumer Starting");
     info!("==========================================");
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] Startup banner logged");
+    let _ = std::io::stderr().flush();
 
     // Read configuration from environment variables
     // Check for connection string first - it contains the host
@@ -305,6 +311,9 @@ async fn run() -> Result<()> {
         handles.push(handle);
     }
 
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] All {} consumer group tasks spawned", handles.len());
+    let _ = std::io::stderr().flush();
+
     // Spawn statistics reporter
     let stats_reporter = stats.clone();
     let reporter_handle = tokio::spawn(async move {
@@ -340,50 +349,28 @@ async fn run() -> Result<()> {
     });
 
     // Wait for all consumer tasks - keep running forever
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] All consumer tasks started. Application will run indefinitely...");
+    let _ = std::io::stderr().flush();
     info!("All consumer tasks started. Application will run indefinitely...");
-    info!("Waiting for shutdown signal (SIGTERM/SIGINT)...");
+    info!("Application is running. Tasks will continue until shutdown signal is received.");
     
-    // Wait for a shutdown signal (SIGTERM in Kubernetes, Ctrl+C locally)
-    use tokio::signal;
+    // Add reporter handle to the list - keeping handles alive keeps tasks running
+    handles.push(reporter_handle);
     
-    // Listen for both SIGTERM (Kubernetes) and SIGINT (Ctrl+C)
-    #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate())
-            .context("Failed to register SIGTERM handler")?;
-        let mut sigint = signal(SignalKind::interrupt())
-            .context("Failed to register SIGINT handler")?;
-        
-        tokio::select! {
-            _ = sigterm.recv() => {
-                info!("Received SIGTERM - shutting down gracefully...");
-            }
-            _ = sigint.recv() => {
-                info!("Received SIGINT (Ctrl+C) - shutting down gracefully...");
-            }
-            _ = signal::ctrl_c() => {
-                info!("Received Ctrl+C - shutting down gracefully...");
-            }
-        }
-    }
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] Total tasks spawned: {} (handles kept alive to prevent task termination)", handles.len());
+    let _ = std::io::stderr().flush();
     
-    #[cfg(not(unix))]
-    {
-        // On non-Unix platforms, just wait for Ctrl+C
-        signal::ctrl_c().await
-            .context("Failed to register Ctrl+C handler")?;
-        info!("Received Ctrl+C - shutting down gracefully...");
-    }
+    // CRITICAL: Keep handles in scope - dropping them would cancel the tasks
+    // Simply wait forever - the handles keep the tasks alive
+    // Kubernetes will send SIGTERM when it wants to terminate the pod
+    std::future::pending::<()>().await;
     
-    // Cancel reporter
-    reporter_handle.abort();
+    // This code is unreachable, but prevents handles from being dropped
+    drop(handles);
     
-    // Wait a bit for tasks to finish gracefully
-    info!("Waiting for tasks to finish gracefully (5 seconds)...");
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    
-    info!("Application shutting down...");
+    // This line should never be reached, but if it is, return success
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] ERROR: Reached end of run() function - this should never happen!");
+    let _ = std::io::stderr().flush();
     Ok(())
 }
 
