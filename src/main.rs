@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use futures::stream::StreamExt;
 use std::collections::HashMap;
 use std::env;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -89,9 +90,28 @@ impl EventStats {
 
 #[tokio::main]
 async fn main() {
+    // Install panic hook to capture panics before they crash
+    std::panic::set_hook(Box::new(|panic_info| {
+        eprintln!("[ehub-debug-consumer] ==========================================");
+        eprintln!("[ehub-debug-consumer] PANIC DETECTED!");
+        eprintln!("[ehub-debug-consumer] ==========================================");
+        if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            eprintln!("[ehub-debug-consumer] Panic message: {}", s);
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            eprintln!("[ehub-debug-consumer] Panic message: {}", s);
+        }
+        if let Some(location) = panic_info.location() {
+            eprintln!("[ehub-debug-consumer] Panic location: {}:{}:{}", location.file(), location.line(), location.column());
+        }
+        eprintln!("[ehub-debug-consumer] ==========================================");
+        std::io::Write::flush(&mut std::io::stderr()).ok();
+    }));
+    
     // Print to stderr immediately (Kubernetes captures this even if logging fails)
-    eprintln!("[ehub-debug-consumer] Starting application...");
-    eprintln!("[ehub-debug-consumer] Version: {}", env!("CARGO_PKG_VERSION"));
+    // Use writeln! to ensure immediate flush
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] Starting application...");
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] Version: {}", env!("CARGO_PKG_VERSION"));
+    let _ = std::io::stderr().flush();
     
     // Initialize tracing with human-readable format
     // Default to INFO level to reduce noise, but allow override via RUST_LOG
@@ -110,11 +130,13 @@ async fn main() {
         .with_writer(std::io::stderr)  // Write to stderr so Kubernetes captures it
         .init();
 
-    eprintln!("[ehub-debug-consumer] Logging initialized");
+    let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] Logging initialized");
+    let _ = std::io::stderr().flush();
 
     // Run the main logic and handle errors
     if let Err(e) = run().await {
-        eprintln!("[ehub-debug-consumer] FATAL ERROR: {:?}", e);
+        let _ = writeln!(std::io::stderr(), "[ehub-debug-consumer] FATAL ERROR: {:?}", e);
+        let _ = std::io::stderr().flush();
         error!("==========================================");
         error!("FATAL ERROR - Application is exiting");
         error!("==========================================");
@@ -127,6 +149,7 @@ async fn main() {
         error!("");
         error!("Check your Kubernetes deployment configuration and environment variables.");
         error!("==========================================");
+        let _ = std::io::stderr().flush();
         std::process::exit(1);
     }
 }
