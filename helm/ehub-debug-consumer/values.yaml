@@ -6,7 +6,7 @@ replicaCount: 0
 image:
   repository: dmarshaltu/ehub_debug_consumer
   pullPolicy: IfNotPresent
-  tag: "0.1.0"
+  tag: "0.1.2"
 
 imagePullSecrets: []
 nameOverride: ""

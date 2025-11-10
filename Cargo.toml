@@ -1,7 +1,7 @@
 [package]
 name = "ehub_debug_consumer"
-version = "0.1.1"
-edition = "2021"
+version = "0.1.2"
+edition = "2024"
 authors = ["DmarshalTU"]
 description = "A comprehensive Rust-based debug consumer for Azure Event Hubs with maximum logging capabilities"
 license = "MIT"

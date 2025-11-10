@@ -136,11 +136,16 @@ async fn main() -> Result<()> {
     }
 
     // Get partition range configuration
-    let max_partition = env::var("MAX_PARTITION")
+    let max_partition_env = env::var("MAX_PARTITION");
+    let max_partition = max_partition_env
+        .as_ref()
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(7);  // Default to 7 (most Event Hubs have 1-8 partitions)
-    let min_partition = env::var("MIN_PARTITION")
+    
+    let min_partition_env = env::var("MIN_PARTITION");
+    let min_partition = min_partition_env
+        .as_ref()
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(0);
@@ -149,7 +154,21 @@ async fn main() -> Result<()> {
     info!("  Event Hub Host: {}", host);
     info!("  Event Hub Name: {}", eventhub);
     info!("  Consumer Groups: {:?}", consumer_groups);
-    info!("  Partition Range: {}-{} (set MIN_PARTITION/MAX_PARTITION env vars to override)", min_partition, max_partition);
+    
+    // Log what we actually read from environment
+    if let Ok(val) = max_partition_env {
+        info!("  MAX_PARTITION env var: '{}' (parsed as: {})", val, max_partition);
+    } else {
+        info!("  MAX_PARTITION env var: not set (using default: {})", max_partition);
+    }
+    if let Ok(val) = min_partition_env {
+        info!("  MIN_PARTITION env var: '{}' (parsed as: {})", val, min_partition);
+    } else {
+        info!("  MIN_PARTITION env var: not set (using default: {})", min_partition);
+    }
+    
+    info!("  Partition Range: {}-{} (will scan partitions {}-{})", min_partition, max_partition, min_partition, max_partition);
+    
     if max_partition > 7 {
         warn!("  ⚠️  MAX_PARTITION is set to {} - this may try non-existent partitions!", max_partition);
         warn!("     Most Event Hubs have 1-8 partitions. Set MAX_PARTITION=7 if you have 8 partitions (0-7)");
