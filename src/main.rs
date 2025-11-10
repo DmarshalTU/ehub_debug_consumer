@@ -87,17 +87,19 @@ impl EventStats {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing with human-readable format
+    // Default to INFO level to reduce noise, but allow override via RUST_LOG
+    let default_log = "info,azure_messaging_eventhubs=warn,azure_core=warn,azure_core_amqp=warn".to_string();
     tracing_subscriber::fmt()
         .with_env_filter(
             env::var("RUST_LOG")
-                .unwrap_or_else(|_| "info,azure_messaging_eventhubs=trace,azure_core=trace".to_string())
+                .unwrap_or(default_log)
         )
         .with_ansi(true)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_file(true)
-        .with_line_number(true)
+        .with_target(false)  // Hide target to reduce noise
+        .with_thread_ids(false)  // Hide thread IDs to reduce noise
+        .with_thread_names(false)  // Hide thread names to reduce noise
+        .with_file(false)  // Hide file paths to reduce noise
+        .with_line_number(false)  // Hide line numbers to reduce noise
         .init();
 
     info!("==========================================");
@@ -133,10 +135,21 @@ async fn main() -> Result<()> {
         anyhow::bail!("At least one consumer group must be specified in CONSUMER_GROUPS");
     }
 
+    // Get partition range configuration
+    let max_partition = env::var("MAX_PARTITION")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(31);
+    let min_partition = env::var("MIN_PARTITION")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(0);
+    
     info!("Configuration:");
     info!("  Event Hub Host: {}", host);
     info!("  Event Hub Name: {}", eventhub);
     info!("  Consumer Groups: {:?}", consumer_groups);
+    info!("  Partition Range: {}-{} (set MIN_PARTITION/MAX_PARTITION to override)", min_partition, max_partition);
     
     // Log authentication method
     let auth_method = if env::var("EVENTHUB_CONNECTION_STRING").is_ok() {
@@ -164,6 +177,8 @@ async fn main() -> Result<()> {
         let host_clone = host.clone();
         let eventhub_clone = eventhub.clone();
         let stats_clone = stats.clone();
+        let min_partition_clone = min_partition;
+        let max_partition_clone = max_partition;
 
         let handle = tokio::spawn(async move {
             if let Err(e) = consume_from_group(
@@ -171,6 +186,8 @@ async fn main() -> Result<()> {
                 eventhub_clone,
                 &consumer_group,
                 stats_clone,
+                min_partition_clone,
+                max_partition_clone,
             ).await {
                 error!("Consumer group '{}' failed: {:?}", consumer_group, e);
             }
@@ -313,6 +330,8 @@ async fn consume_from_group(
     eventhub: String,
     consumer_group: &str,
     stats: Arc<Mutex<HashMap<String, EventStats>>>,
+    min_partition: u32,
+    max_partition: u32,
 ) -> Result<()> {
     info!("[{}] Creating credential...", consumer_group);
     let credential = create_credential()
@@ -325,15 +344,13 @@ async fn consume_from_group(
         .context("Failed to open consumer client")?;
 
     info!("[{}] ✓ Consumer client opened successfully", consumer_group);
-
-    // Get partition IDs - we'll try to discover them by attempting to open receivers
-    // For now, we'll try partitions 0-31 (common range)
-    info!("[{}] Discovering partitions...", consumer_group);
+    
+    info!("[{}] Discovering partitions (range: {}-{})...", consumer_group, min_partition, max_partition);
     
     let mut partition_tasks = Vec::new();
     
-    // Try to open receivers for partitions 0-31
-    for partition_id in 0..32 {
+    // Try to open receivers for partitions in the specified range
+    for partition_id in min_partition..=max_partition {
         let partition_str = partition_id.to_string();
         let host_clone = host.to_string();
         let eventhub_clone = eventhub.to_string();
@@ -360,10 +377,23 @@ async fn consume_from_group(
             {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!(
-                        "[{}] Failed to create consumer for partition {}: {:?}",
-                        consumer_group_clone, partition_str, e
-                    );
+                    let error_msg = format!("{:?}", e);
+                    let is_auth_error = error_msg.contains("Unauthorized") || 
+                                       error_msg.contains("UnauthorizedAccess") ||
+                                       error_msg.contains("Listen");
+                    
+                    if is_auth_error {
+                        error!(
+                            "[{}] ❌ AUTHORIZATION ERROR for partition {}: Missing 'Listen' permissions",
+                            consumer_group_clone, partition_str
+                        );
+                        error!("   Check your Shared Access Policy or Service Principal permissions in Azure Portal");
+                    } else {
+                        warn!(
+                            "[{}] Failed to create consumer for partition {}: {:?}",
+                            consumer_group_clone, partition_str, e
+                        );
+                    }
                     return;
                 }
             };
@@ -605,10 +635,65 @@ async fn consume_from_partition(
                 }
             }
             Err(err) => {
-                error!(
-                    "[{}:{}] ❌ ERROR receiving event: {:?}",
-                    consumer_group, partition, err
-                );
+                // Extract meaningful error information
+                let error_msg = format!("{:?}", err);
+                let is_auth_error = error_msg.contains("Unauthorized") || 
+                                   error_msg.contains("UnauthorizedAccess") ||
+                                   error_msg.contains("Listen") ||
+                                   error_msg.contains("claim");
+                
+                if is_auth_error {
+                    error!("");
+                    error!("╔═══════════════════════════════════════════════════════════════════════════════╗");
+                    error!("║ ⚠️  AUTHORIZATION ERROR                                                       ║");
+                    error!("╠═══════════════════════════════════════════════════════════════════════════════╣");
+                    error!("║ Consumer Group: {:<65} ║", consumer_group);
+                    error!("║ Partition:      {:<65} ║", partition);
+                    error!("║                                                                               ║");
+                    error!("║ The consumer does not have 'Listen' permissions on this Event Hub.           ║");
+                    error!("║                                                                               ║");
+                    error!("║ SOLUTION:                                                                     ║");
+                    error!("║ 1. Go to Azure Portal → Event Hub Namespace → Shared access policies        ║");
+                    error!("║ 2. Ensure your policy has 'Listen' permission                                ║");
+                    error!("║ 3. If using Service Principal, grant 'Azure Event Hubs Data Receiver' role   ║");
+                    error!("║                                                                               ║");
+                    if error_msg.contains("TrackingId") {
+                        let tracking_id = error_msg
+                            .split("TrackingId:")
+                            .nth(1)
+                            .and_then(|s| s.split(',').next())
+                            .unwrap_or("N/A");
+                        error!("║ Tracking ID:    {:<65} ║", tracking_id);
+                    }
+                    error!("╚═══════════════════════════════════════════════════════════════════════════════╝");
+                    error!("");
+                } else {
+                    error!("");
+                    error!("╔═══════════════════════════════════════════════════════════════════════════════╗");
+                    error!("║ ❌ ERROR RECEIVING EVENT                                                      ║");
+                    error!("╠═══════════════════════════════════════════════════════════════════════════════╣");
+                    error!("║ Consumer Group: {:<65} ║", consumer_group);
+                    error!("║ Partition:      {:<65} ║", partition);
+                    error!("║ Timestamp:      {:<65} ║", receive_timestamp.format("%Y-%m-%d %H:%M:%S%.3f UTC"));
+                    error!("║                                                                               ║");
+                    // Try to extract a readable error message
+                    let readable_error = if error_msg.len() > 200 {
+                        format!("{}...", &error_msg[..197])
+                    } else {
+                        error_msg.clone()
+                    };
+                    error!("║ Error:                                                                        ║");
+                    for line in readable_error.lines() {
+                        let display_line = if line.len() > 75 {
+                            format!("{}...", &line[..72])
+                        } else {
+                            line.to_string()
+                        };
+                        error!("║   {:<75} ║", display_line);
+                    }
+                    error!("╚═══════════════════════════════════════════════════════════════════════════════╝");
+                    error!("");
+                }
                 
                 // Update error statistics
                 {
@@ -617,14 +702,6 @@ async fn consume_from_partition(
                         stat.record_error();
                     }
                 }
-
-                // Log full error details
-                error!("Error Details:");
-                error!("  Consumer Group: {}", consumer_group);
-                error!("  Partition: {}", partition);
-                error!("  Timestamp: {}", receive_timestamp.format("%Y-%m-%d %H:%M:%S%.3f UTC"));
-                error!("  Error: {:?}", err);
-                error!("");
             }
         }
     }

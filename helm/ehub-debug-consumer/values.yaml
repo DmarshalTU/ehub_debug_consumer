@@ -59,7 +59,9 @@ config:
   eventhubsHost: ""
   eventhubName: ""
   consumerGroups: "default"
-  rustLog: "info,azure_messaging_eventhubs=trace,azure_core=trace"
+  minPartition: 0  # Starting partition ID to scan
+  maxPartition: 31  # Ending partition ID to scan (adjust based on your Event Hub partition count)
+  rustLog: "info,azure_messaging_eventhubs=warn,azure_core=warn"
 
 # Azure Authentication Configuration
 # Supports two methods:

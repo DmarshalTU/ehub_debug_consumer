@@ -33,7 +33,9 @@ The application reads configuration from environment variables:
 - `EVENTHUBS_HOST`: Event Hub namespace host URL (e.g., `your-namespace.servicebus.windows.net`)
 - `EVENTHUB_NAME`: Name of the Event Hub instance
 - `CONSUMER_GROUPS`: Comma-separated list of consumer groups (e.g., `group1,group2,group3`)
-- `RUST_LOG`: Logging level (default: `info,azure_messaging_eventhubs=trace,azure_core=trace`)
+- `MIN_PARTITION`: Starting partition ID to scan (default: `0`)
+- `MAX_PARTITION`: Ending partition ID to scan (default: `31`)
+- `RUST_LOG`: Logging level (default: `info,azure_messaging_eventhubs=warn,azure_core=warn`)
 
 ### Authentication
 
