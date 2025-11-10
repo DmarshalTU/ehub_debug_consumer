@@ -1,12 +1,6 @@
 # Build stage
-# Use BUILDPLATFORM to allow building on any architecture (Mac, Linux, etc.)
-FROM --platform=$BUILDPLATFORM rust:1.75 as builder
-
-# Install cross-compilation toolchain for Linux/amd64 target
-RUN rustup target add x86_64-unknown-linux-gnu && \
-    apt-get update && \
-    apt-get install -y gcc-x86-64-linux-gnu && \
-    rm -rf /var/lib/apt/lists/*
+# Docker buildx will handle cross-compilation automatically when --platform is specified
+FROM rust:latest as builder
 
 WORKDIR /app
 
@@ -17,17 +11,17 @@ COPY Cargo.toml Cargo.lock ./
 # We need a minimal source file for Cargo to compile dependencies
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release --target x86_64-unknown-linux-gnu && \
+    cargo build --release && \
     rm -rf src
 
 # Copy actual source code
 COPY src ./src
 
-# Build the application for Linux/amd64 target
-RUN cargo build --release --target x86_64-unknown-linux-gnu
+# Build the application
+RUN cargo build --release
 
-# Runtime stage - use the target platform explicitly
-FROM --platform=linux/amd64 debian:bookworm-slim
+# Runtime stage - explicitly set platform for final image
+FROM debian:bookworm-slim
 
 # Install CA certificates for TLS connections
 RUN apt-get update && \
@@ -37,7 +31,7 @@ RUN apt-get update && \
 WORKDIR /app
 
 # Copy the compiled binary from builder stage
-COPY --from=builder /app/target/x86_64-unknown-linux-gnu/release/ehub_debug_consumer /app/ehub_debug_consumer
+COPY --from=builder /app/target/release/ehub_debug_consumer /app/ehub_debug_consumer
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
