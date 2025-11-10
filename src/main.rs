@@ -173,11 +173,20 @@ async fn run() -> Result<()> {
 
     // Get partition range configuration
     let max_partition_env = env::var("MAX_PARTITION");
-    let max_partition = max_partition_env
+    let max_partition_raw = max_partition_env
         .as_ref()
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(7);  // Default to 7 (most Event Hubs have 1-8 partitions)
+    
+    // HARD CAP at 7 to prevent scanning non-existent partitions
+    let max_partition = if max_partition_raw > 7 {
+        eprintln!("[ehub-debug-consumer] WARNING: MAX_PARTITION was {} but capping at 7 to prevent errors!", max_partition_raw);
+        warn!("MAX_PARTITION was {} but capping at 7 to prevent scanning non-existent partitions", max_partition_raw);
+        7
+    } else {
+        max_partition_raw
+    };
     
     let min_partition_env = env::var("MIN_PARTITION");
     let min_partition = min_partition_env
@@ -191,10 +200,13 @@ async fn run() -> Result<()> {
     info!("  Event Hub Name: {}", eventhub);
     info!("  Consumer Groups: {:?}", consumer_groups);
     
-    // Log what we actually read from environment
+    // Log what we actually read from environment - MAKE THIS VERY VISIBLE
+    eprintln!("[ehub-debug-consumer] MAX_PARTITION check:");
     if let Ok(val) = max_partition_env {
+        eprintln!("[ehub-debug-consumer] MAX_PARTITION env var: '{}' (parsed as: {})", val, max_partition);
         info!("  MAX_PARTITION env var: '{}' (parsed as: {})", val, max_partition);
     } else {
+        eprintln!("[ehub-debug-consumer] MAX_PARTITION env var: NOT SET (using default: {})", max_partition);
         info!("  MAX_PARTITION env var: not set (using default: {})", max_partition);
     }
     if let Ok(val) = min_partition_env {
@@ -203,9 +215,13 @@ async fn run() -> Result<()> {
         info!("  MIN_PARTITION env var: not set (using default: {})", min_partition);
     }
     
+    eprintln!("[ehub-debug-consumer] Will scan partitions {}-{}", min_partition, max_partition);
+    info!("  ═══════════════════════════════════════════════════════════════════════════════");
     info!("  Partition Range: {}-{} (will scan partitions {}-{})", min_partition, max_partition, min_partition, max_partition);
+    info!("  ═══════════════════════════════════════════════════════════════════════════════");
     
     if max_partition > 7 {
+        eprintln!("[ehub-debug-consumer] WARNING: MAX_PARTITION is {} (should be 7 for partitions 0-7)!", max_partition);
         warn!("  ⚠️  MAX_PARTITION is set to {} - this may try non-existent partitions!", max_partition);
         warn!("     Most Event Hubs have 1-8 partitions. Set MAX_PARTITION=7 if you have 8 partitions (0-7)");
     }
@@ -422,12 +438,24 @@ async fn consume_from_group(
 
     info!("[{}] ✓ Consumer client opened successfully", consumer_group);
     
+    eprintln!("[ehub-debug-consumer] [{}] Discovering partitions (range: {}-{})...", consumer_group, min_partition, max_partition);
     info!("[{}] Discovering partitions (range: {}-{})...", consumer_group, min_partition, max_partition);
+    
+    // ENFORCE HARD LIMIT - never scan beyond partition 7
+    let effective_max = if max_partition > 7 {
+        eprintln!("[ehub-debug-consumer] [{}] WARNING: max_partition is {} but enforcing limit of 7!", consumer_group, max_partition);
+        warn!("[{}] max_partition is {} but enforcing limit of 7 to prevent errors", consumer_group, max_partition);
+        7
+    } else {
+        max_partition
+    };
     
     let mut partition_tasks = Vec::new();
     
     // Try to open receivers for partitions in the specified range
-    for partition_id in min_partition..=max_partition {
+    eprintln!("[ehub-debug-consumer] [{}] Will scan partitions {}-{}", consumer_group, min_partition, effective_max);
+    for partition_id in min_partition..=effective_max {
+        eprintln!("[ehub-debug-consumer] [{}] Attempting partition {}", consumer_group, partition_id);
         let partition_str = partition_id.to_string();
         let host_clone = host.to_string();
         let eventhub_clone = eventhub.to_string();
