@@ -1,0 +1,7 @@
+apiVersion: v2
+name: ehub-debug-consumer
+description: A Helm chart for Azure Event Hubs Debug Consumer
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+

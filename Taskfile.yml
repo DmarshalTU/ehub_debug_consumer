@@ -1,0 +1,245 @@
+version: '3'
+
+# Global variables
+vars:
+  IMAGE_NAME: dmarshaltu/ehub_debug_consumer
+  VERSION:
+    sh: grep '^version' Cargo.toml | cut -d'"' -f2
+  PLATFORM: linux/amd64
+
+# Tasks
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  build:
+    desc: Build the Rust binary locally
+    cmds:
+      - cargo build --release
+    generates:
+      - target/release/ehub_debug_consumer
+
+  check:
+    desc: Check the code for errors
+    cmds:
+      - cargo check
+
+  test:
+    desc: Run tests
+    cmds:
+      - cargo test
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cargo clean
+      - rm -rf target/
+
+  docker:buildx:setup:
+    desc: Set up Docker buildx for cross-platform builds
+    cmds:
+      - docker buildx create --name multiplatform --use 2>/dev/null || docker buildx use multiplatform
+      - docker buildx inspect --bootstrap
+    summary: |
+      Set up Docker buildx builder for cross-platform builds
+      - Creates multiplatform builder if it doesn't exist
+      - Bootstraps the builder
+
+  docker:build:
+    desc: Build Docker image with version tag for Linux/amd64
+    deps: [docker:buildx:setup]
+    cmds:
+      - echo "Building Docker image {{.IMAGE_NAME}}:{{.VERSION}} for {{.PLATFORM}}..."
+      - |
+        docker buildx build \
+          --platform {{.PLATFORM}} \
+          --tag {{.IMAGE_NAME}}:{{.VERSION}} \
+          --tag {{.IMAGE_NAME}}:latest \
+          --load \
+          .
+    summary: |
+      Build Docker image for Linux/amd64 (suitable for Kubernetes)
+      - Builds with version tag from Cargo.toml
+      - Tags as latest
+      - Uses buildx for cross-platform support
+      - Prevents exec format errors on Kubernetes
+
+  docker:push:
+    desc: Build and push Docker image to Docker Hub (multi-platform)
+    deps: [docker:buildx:setup]
+    cmds:
+      - echo "Building and pushing {{.IMAGE_NAME}}:{{.VERSION}} for {{.PLATFORM}}..."
+      - |
+        docker buildx build \
+          --platform {{.PLATFORM}} \
+          --tag {{.IMAGE_NAME}}:{{.VERSION}} \
+          --tag {{.IMAGE_NAME}}:latest \
+          --push \
+          .
+      - echo "Successfully pushed {{.IMAGE_NAME}}:{{.VERSION}} and {{.IMAGE_NAME}}:latest"
+    summary: |
+      Build and push Docker image to Docker Hub for Linux/amd64
+      - Builds for linux/amd64 platform (Kubernetes compatible)
+      - Pushes both version and latest tags
+      - Uses buildx for cross-platform support
+      - Prevents exec format errors on Kubernetes
+    requires:
+      vars: [VERSION]
+
+  docker:build-push:
+    desc: Build and push Docker image (all-in-one, Linux/amd64)
+    cmds:
+      - task: docker:push
+    summary: |
+      Build and push Docker image in one command
+      - Builds for linux/amd64 (Kubernetes compatible)
+      - Pushes version and latest tags
+      - Prevents exec format errors
+
+  docker:run:
+    desc: Run Docker container locally for testing
+    cmds:
+      - |
+        docker run --rm -it \
+          --platform {{.PLATFORM}} \
+          -e EVENTHUBS_HOST="${EVENTHUBS_HOST}" \
+          -e EVENTHUB_NAME="${EVENTHUB_NAME}" \
+          -e CONSUMER_GROUPS="${CONSUMER_GROUPS:-default}" \
+          -e RUST_LOG="${RUST_LOG:-info}" \
+          {{.IMAGE_NAME}}:{{.VERSION}}
+    requires:
+      vars: [EVENTHUBS_HOST, EVENTHUB_NAME]
+
+  helm:lint:
+    desc: Lint Helm chart
+    dir: helm/ehub-debug-consumer
+    cmds:
+      - helm lint .
+
+  helm:template:
+    desc: Template Helm chart to see rendered output
+    dir: helm/ehub-debug-consumer
+    cmds:
+      - helm template . --debug
+
+  helm:install:
+    desc: Install Helm chart (dry-run by default, use --force to actually install)
+    dir: helm/ehub-debug-consumer
+    cmds:
+      - |
+        helm upgrade --install ehub-debug-consumer . \
+          --namespace {{.NAMESPACE | default "default"}} \
+          --create-namespace \
+          --dry-run
+    vars:
+      NAMESPACE: default
+    prompt: This will install/upgrade the Helm chart. Continue?
+    summary: |
+      Install or upgrade Helm chart
+      - Use --force to actually install (skips dry-run)
+      - Set NAMESPACE variable to install in specific namespace
+
+  helm:uninstall:
+    desc: Uninstall Helm chart
+    dir: helm/ehub-debug-consumer
+    cmds:
+      - helm uninstall ehub-debug-consumer --namespace {{.NAMESPACE | default "default"}}
+    vars:
+      NAMESPACE: default
+    prompt: This will uninstall the Helm chart. Are you sure?
+
+  git:status:
+    desc: Show git status
+    cmds:
+      - git status
+
+  git:add:
+    desc: Add all changes to git
+    cmds:
+      - git add .
+      - echo "All changes staged"
+
+  git:commit:
+    desc: Commit changes with a message
+    cmds:
+      - git commit -m "{{.MESSAGE | default \"Update\"}}"
+    vars:
+      MESSAGE: Update
+    summary: |
+      Commit changes to git
+      - Use MESSAGE variable to set commit message
+      - Example: task git:commit MESSAGE="Add new feature"
+
+  git:push:
+    desc: Push to GitHub
+    cmds:
+      - git push -u origin main
+    summary: |
+      Push code to GitHub
+      - Pushes to main branch
+      - Sets upstream if not already set
+
+  git:add-commit:
+    desc: Add and commit changes
+    cmds:
+      - task: git:add
+      - task: git:commit
+    vars:
+      MESSAGE: Update
+
+  git:add-commit-push:
+    desc: Add, commit, and push to GitHub
+    cmds:
+      - task: git:add
+      - task: git:commit
+      - task: git:push
+    vars:
+      MESSAGE: Update
+    summary: |
+      Complete git workflow
+      - Adds all changes
+      - Commits with message
+      - Pushes to GitHub
+      - Use MESSAGE variable for commit message
+
+  release:
+    desc: Full release process (check, git push, build, push image)
+    deps:
+      - task: check
+    cmds:
+      - echo "Starting release process for version {{.VERSION}}..."
+      - task: git:add
+      - git commit -m "Release {{.VERSION}}"
+      - task: git:push
+      - task: docker:build-push
+      - echo "Release {{.VERSION}} completed successfully!"
+      - echo "Image: {{.IMAGE_NAME}}:{{.VERSION}}"
+    summary: |
+      Complete release process
+      - Checks code
+      - Adds, commits, and pushes to GitHub
+      - Builds and pushes Docker image for Linux/amd64
+      - Ready for Kubernetes deployment
+
+  version:
+    desc: Show current version
+    cmds:
+      - echo "Version: {{.VERSION}}"
+      - echo "Image: {{.IMAGE_NAME}}:{{.VERSION}}"
+      - echo "Platform: {{.PLATFORM}}"
+
+  fmt:
+    desc: Format Rust code
+    cmds:
+      - cargo fmt
+
+  clippy:
+    desc: Run Clippy linter
+    cmds:
+      - cargo clippy -- -D warnings
+
+  all:
+    desc: Run check, test, and clippy
+    deps: [check, test, clippy]

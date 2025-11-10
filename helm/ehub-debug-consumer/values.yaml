@@ -1,0 +1,87 @@
+# Default values for ehub-debug-consumer
+# This is a YAML-formatted file.
+
+replicaCount: 0
+
+image:
+  repository: dmarshaltu/ehub_debug_consumer
+  pullPolicy: IfNotPresent
+  tag: "0.1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Event Hubs Configuration
+config:
+  eventhubsHost: ""
+  eventhubName: ""
+  consumerGroups: "default"
+  rustLog: "info,azure_messaging_eventhubs=trace,azure_core=trace"
+
+# Job configuration for scaling
+job:
+  enabled: false
+  name: scale-ehub-debug-consumer
+  image:
+    repository: bitnami/kubectl
+    tag: latest
+    pullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      kubectl scale deployment {{ .Release.Name }} --replicas={{ .Values.replicaCount }} -n {{ .Release.Namespace }}
+  backoffLimit: 4
+  restartPolicy: Never
+
+# Additional environment variables
+extraEnv: []
+
+# Volume mounts
+volumeMounts: []
+
+volumes: []
+

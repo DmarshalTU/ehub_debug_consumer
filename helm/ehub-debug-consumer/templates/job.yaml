@@ -1,0 +1,28 @@
+{{- if .Values.job.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Values.job.name }}-{{ .Release.Name }}
+  labels:
+    {{- include "ehub-debug-consumer.labels" . | nindent 4 }}
+    app.kubernetes.io/component: scaler
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "ehub-debug-consumer.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: scaler
+    spec:
+      restartPolicy: {{ .Values.job.restartPolicy | default "Never" }}
+      containers:
+        - name: scaler
+          image: "{{ .Values.job.image.repository }}:{{ .Values.job.image.tag }}"
+          imagePullPolicy: {{ .Values.job.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              kubectl scale deployment {{ include "ehub-debug-consumer.fullname" . }} --replicas={{ .Values.replicaCount }} -n {{ .Release.Namespace }}
+{{- end }}
+

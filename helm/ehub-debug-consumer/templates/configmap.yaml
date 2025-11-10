@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ehub-debug-consumer.fullname" . }}-config
+  labels:
+    {{- include "ehub-debug-consumer.labels" . | nindent 4 }}
+data:
+  EVENTHUBS_HOST: {{ .Values.config.eventhubsHost | quote }}
+  EVENTHUB_NAME: {{ .Values.config.eventhubName | quote }}
+  CONSUMER_GROUPS: {{ .Values.config.consumerGroups | quote }}
+  RUST_LOG: {{ .Values.config.rustLog | quote }}
+
