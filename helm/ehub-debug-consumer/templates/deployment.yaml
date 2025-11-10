@@ -36,18 +36,27 @@ spec:
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           env:
+            {{- if .Values.config.eventhubsHost }}
             - name: EVENTHUBS_HOST
               value: {{ .Values.config.eventhubsHost | quote }}
+            {{- end }}
+            {{- if .Values.config.eventhubName }}
             - name: EVENTHUB_NAME
               value: {{ .Values.config.eventhubName | quote }}
+            {{- end }}
+            {{- if .Values.config.consumerGroups }}
             - name: CONSUMER_GROUPS
               value: {{ .Values.config.consumerGroups | quote }}
+            {{- else }}
+            - name: CONSUMER_GROUPS
+              value: "default"
+            {{- end }}
             - name: MIN_PARTITION
               value: {{ .Values.config.minPartition | default 0 | quote }}
             - name: MAX_PARTITION
               value: {{ .Values.config.maxPartition | default 7 | quote }}
             - name: RUST_LOG
-              value: {{ .Values.config.rustLog | quote }}
+              value: {{ .Values.config.rustLog | default "info,azure_messaging_eventhubs=warn,azure_core=warn" | quote }}
             {{- if .Values.auth.connectionStringSecretName }}
             # Use connection string from Kubernetes Secret
             - name: EVENTHUB_CONNECTION_STRING

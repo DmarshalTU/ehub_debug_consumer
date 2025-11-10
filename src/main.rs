@@ -86,6 +86,10 @@ impl EventStats {
 
 #[tokio::main]
 async fn main() {
+    // Print to stderr immediately (Kubernetes captures this even if logging fails)
+    eprintln!("[ehub-debug-consumer] Starting application...");
+    eprintln!("[ehub-debug-consumer] Version: {}", env!("CARGO_PKG_VERSION"));
+    
     // Initialize tracing with human-readable format
     // Default to INFO level to reduce noise, but allow override via RUST_LOG
     let default_log = "info,azure_messaging_eventhubs=warn,azure_core=warn,azure_core_amqp=warn".to_string();
@@ -100,10 +104,14 @@ async fn main() {
         .with_thread_names(false)  // Hide thread names to reduce noise
         .with_file(false)  // Hide file paths to reduce noise
         .with_line_number(false)  // Hide line numbers to reduce noise
+        .with_writer(std::io::stderr)  // Write to stderr so Kubernetes captures it
         .init();
+
+    eprintln!("[ehub-debug-consumer] Logging initialized");
 
     // Run the main logic and handle errors
     if let Err(e) = run().await {
+        eprintln!("[ehub-debug-consumer] FATAL ERROR: {:?}", e);
         error!("==========================================");
         error!("FATAL ERROR - Application is exiting");
         error!("==========================================");
@@ -128,20 +136,28 @@ async fn run() -> Result<()> {
 
     // Read configuration from environment variables
     // Check for connection string first - it contains the host
-    let (host, connection_string_parsed) = if let Ok(conn_str) = env::var("EVENTHUB_CONNECTION_STRING") {
+    // Note: Helm sets empty strings as env vars, so we need to check for empty strings too
+    let (host, _connection_string_parsed) = if let Ok(conn_str) = env::var("EVENTHUB_CONNECTION_STRING") {
+        if conn_str.trim().is_empty() {
+            anyhow::bail!("EVENTHUB_CONNECTION_STRING is set but empty. Please provide a valid connection string or set EVENTHUBS_HOST instead.");
+        }
         let (parsed_host, _, _) = parse_connection_string(&conn_str)
             .context("Failed to parse EVENTHUB_CONNECTION_STRING")?;
         (parsed_host, Some(conn_str))
     } else {
-        (
-            env::var("EVENTHUBS_HOST")
-                .context("EVENTHUBS_HOST or EVENTHUB_CONNECTION_STRING environment variable is required")?,
-            None,
-        )
+        let host_env = env::var("EVENTHUBS_HOST")
+            .context("EVENTHUBS_HOST or EVENTHUB_CONNECTION_STRING environment variable is required")?;
+        if host_env.trim().is_empty() {
+            anyhow::bail!("EVENTHUBS_HOST is set but empty. Please provide a valid Event Hub host (e.g., namespace.servicebus.windows.net)");
+        }
+        (host_env, None)
     };
     
     let eventhub: String = env::var("EVENTHUB_NAME")
         .context("EVENTHUB_NAME environment variable is required")?;
+    if eventhub.trim().is_empty() {
+        anyhow::bail!("EVENTHUB_NAME is set but empty. Please provide a valid Event Hub name.");
+    }
     
     let consumer_groups_str = env::var("CONSUMER_GROUPS")
         .unwrap_or_else(|_| "default".to_string());
