@@ -85,7 +85,7 @@ impl EventStats {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     // Initialize tracing with human-readable format
     // Default to INFO level to reduce noise, but allow override via RUST_LOG
     let default_log = "info,azure_messaging_eventhubs=warn,azure_core=warn,azure_core_amqp=warn".to_string();
@@ -101,6 +101,26 @@ async fn main() -> Result<()> {
         .with_file(false)  // Hide file paths to reduce noise
         .with_line_number(false)  // Hide line numbers to reduce noise
         .init();
+
+    // Run the main logic and handle errors
+    if let Err(e) = run().await {
+        error!("==========================================");
+        error!("FATAL ERROR - Application is exiting");
+        error!("==========================================");
+        error!("Error: {:?}", e);
+        error!("");
+        error!("This usually means:");
+        error!("  1. Missing required environment variables (EVENTHUBS_HOST, EVENTHUB_NAME, etc.)");
+        error!("  2. Authentication failure (check AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)");
+        error!("  3. Invalid configuration");
+        error!("");
+        error!("Check your Kubernetes deployment configuration and environment variables.");
+        error!("==========================================");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
 
     info!("==========================================");
     info!("Azure Event Hubs Debug Consumer Starting");
@@ -269,6 +289,10 @@ async fn main() -> Result<()> {
 /// Parse Event Hub connection string
 /// Format: Endpoint=sb://namespace.servicebus.windows.net/;SharedAccessKeyName=policy-name;SharedAccessKey=key
 fn parse_connection_string(conn_str: &str) -> Result<(String, String, String)> {
+    if conn_str.is_empty() {
+        anyhow::bail!("Connection string is empty");
+    }
+    
     let mut endpoint = None;
     let mut key_name = None;
     let mut key = None;
@@ -278,22 +302,36 @@ fn parse_connection_string(conn_str: &str) -> Result<(String, String, String)> {
             match k.trim() {
                 "Endpoint" => {
                     // Extract host from endpoint: sb://namespace.servicebus.windows.net/
+                    // Handle both with and without trailing slash
                     let host = v
                         .trim()
                         .strip_prefix("sb://")
-                        .and_then(|s| s.strip_suffix('/'))
-                        .ok_or_else(|| anyhow::anyhow!("Invalid Endpoint format in connection string"))?;
+                        .ok_or_else(|| anyhow::anyhow!("Invalid Endpoint format: must start with 'sb://'"))?
+                        .trim_end_matches('/');
+                    
+                    if host.is_empty() {
+                        anyhow::bail!("Invalid Endpoint format: host is empty");
+                    }
+                    
                     endpoint = Some(host.to_string());
                 }
-                "SharedAccessKeyName" => key_name = Some(v.trim().to_string()),
-                "SharedAccessKey" => key = Some(v.trim().to_string()),
+                "SharedAccessKeyName" => {
+                    if !v.trim().is_empty() {
+                        key_name = Some(v.trim().to_string());
+                    }
+                }
+                "SharedAccessKey" => {
+                    if !v.trim().is_empty() {
+                        key = Some(v.trim().to_string());
+                    }
+                }
                 _ => {}
             }
         }
     }
     
     Ok((
-        endpoint.context("Missing Endpoint in connection string")?,
+        endpoint.context("Missing Endpoint in connection string. Format: Endpoint=sb://namespace.servicebus.windows.net/;...")?,
         key_name.context("Missing SharedAccessKeyName in connection string")?,
         key.context("Missing SharedAccessKey in connection string")?,
     ))
