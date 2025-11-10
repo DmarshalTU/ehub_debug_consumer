@@ -339,16 +339,48 @@ async fn run() -> Result<()> {
         }
     });
 
-    // Wait for all consumer tasks
-    for handle in handles {
-        if let Err(e) = handle.await {
-            error!("Consumer task panicked: {:?}", e);
+    // Wait for all consumer tasks - keep running forever
+    info!("All consumer tasks started. Application will run indefinitely...");
+    
+    // Wait for a shutdown signal (SIGTERM in Kubernetes, Ctrl+C locally)
+    use tokio::signal;
+    
+    // In Kubernetes, pods receive SIGTERM when being terminated
+    // We'll wait for either SIGTERM or SIGINT (Ctrl+C)
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("Received SIGINT (Ctrl+C) - shutting down...");
         }
+        _ = async {
+            // Also listen for SIGTERM (Kubernetes sends this)
+            #[cfg(unix)]
+            {
+                use tokio::signal::unix::{signal, SignalKind};
+                let mut sigterm = signal(SignalKind::terminate()).ok();
+                if let Some(mut sigterm) = sigterm {
+                    sigterm.recv().await;
+                    info!("Received SIGTERM - shutting down...");
+                } else {
+                    // If we can't listen for SIGTERM, wait forever
+                    std::future::pending::<()>().await;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                // On non-Unix, just wait forever
+                std::future::pending::<()>().await;
+            }
+        } => {}
     }
-
+    
     // Cancel reporter
     reporter_handle.abort();
-
+    
+    // Wait a bit for tasks to finish gracefully
+    info!("Waiting for tasks to finish gracefully...");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    
+    info!("Application shutting down...");
     Ok(())
 }
 
