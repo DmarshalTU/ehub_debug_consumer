@@ -61,6 +61,23 @@ config:
   consumerGroups: "default"
   rustLog: "info,azure_messaging_eventhubs=trace,azure_core=trace"
 
+# Azure Authentication Configuration
+# For Kubernetes, you MUST use Service Principal authentication
+# Set these values or use a Kubernetes Secret (recommended)
+auth:
+  # Service Principal credentials (required for Kubernetes)
+  # Option 1: Set directly in values.yaml (not recommended for production)
+  clientId: ""
+  clientSecret: ""
+  tenantId: ""
+  
+  # Option 2: Use Kubernetes Secret (recommended)
+  # Set secretName and the secret should contain:
+  #   AZURE_CLIENT_ID
+  #   AZURE_CLIENT_SECRET
+  #   AZURE_TENANT_ID
+  secretName: ""
+
 # Job configuration for scaling
 job:
   enabled: false

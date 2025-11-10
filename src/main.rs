@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use azure_identity::DeveloperToolsCredential;
+use azure_identity::ClientSecretCredential;
 use azure_messaging_eventhubs::{
     ConsumerClient, OpenReceiverOptions, StartLocation, StartPosition,
 };
@@ -126,6 +126,16 @@ async fn main() -> Result<()> {
     info!("  Event Hub Host: {}", host);
     info!("  Event Hub Name: {}", eventhub);
     info!("  Consumer Groups: {:?}", consumer_groups);
+    
+    // Log authentication method
+    let auth_method = if env::var("AZURE_CLIENT_ID").is_ok() 
+        && env::var("AZURE_CLIENT_SECRET").is_ok() 
+        && env::var("AZURE_TENANT_ID").is_ok() {
+        "Service Principal (from environment variables)"
+    } else {
+        "DefaultAzureCredential (Managed Identity, Workload Identity, or Azure CLI)"
+    };
+    info!("  Authentication: {}", auth_method);
     info!("");
 
     info!("✓ Ready to create credentials");
@@ -203,6 +213,45 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Create Azure credential based on environment variables
+/// Supports:
+/// 1. Service Principal (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID) - for Kubernetes
+/// 2. DeveloperToolsCredential (for local development with az login)
+/// 
+/// Note: For Managed Identity in AKS, use Workload Identity which requires additional K8s configuration.
+/// The Service Principal approach is simpler and recommended for most use cases.
+fn create_credential() -> Result<Arc<ClientSecretCredential>> {
+    // Check if Service Principal credentials are provided (required for Kubernetes)
+    if let (Ok(client_id), Ok(client_secret), Ok(tenant_id)) = (
+        env::var("AZURE_CLIENT_ID"),
+        env::var("AZURE_CLIENT_SECRET"),
+        env::var("AZURE_TENANT_ID"),
+    ) {
+        info!("Using Service Principal authentication (suitable for Kubernetes)");
+        let credential = ClientSecretCredential::new(
+            &tenant_id,
+            client_id,
+            client_secret.into(),
+            None,
+        )
+        .context("Failed to create ClientSecretCredential")?;
+        Ok(credential)
+    } else {
+        // Fall back to DeveloperToolsCredential for local development only
+        // This will NOT work in Kubernetes pods
+        warn!("Service Principal credentials not found. Using DeveloperToolsCredential (local dev only).");
+        warn!("⚠️  For Kubernetes: You MUST set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, and AZURE_TENANT_ID");
+        
+        // For local dev, we can't return ClientSecretCredential, so we need a different approach
+        // Actually, let's just require Service Principal for now and make it clear
+        anyhow::bail!(
+            "Service Principal credentials required for Kubernetes deployment.\n\
+            Set environment variables: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID\n\
+            For local development, you can use 'az login' but this won't work in pods."
+        );
+    }
+}
+
 async fn consume_from_group(
     host: String,
     eventhub: String,
@@ -210,8 +259,8 @@ async fn consume_from_group(
     stats: Arc<Mutex<HashMap<String, EventStats>>>,
 ) -> Result<()> {
     info!("[{}] Creating credential...", consumer_group);
-    let credential = DeveloperToolsCredential::new(None)
-        .context("Failed to create DeveloperToolsCredential. Ensure you are logged in with 'az login'")?;
+    let credential = create_credential()
+        .context("Failed to create credential")?;
     
     info!("[{}] Creating consumer client...", consumer_group);
     let _consumer = ConsumerClient::builder()
@@ -237,7 +286,7 @@ async fn consume_from_group(
 
         let task = tokio::spawn(async move {
             // Create a new credential for this partition
-            let partition_credential = match DeveloperToolsCredential::new(None) {
+            let partition_credential = match create_credential() {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(

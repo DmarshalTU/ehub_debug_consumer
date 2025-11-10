@@ -44,6 +44,32 @@ spec:
               value: {{ .Values.config.consumerGroups | quote }}
             - name: RUST_LOG
               value: {{ .Values.config.rustLog | quote }}
+            {{- if .Values.auth.secretName }}
+            # Use Kubernetes Secret for authentication (recommended)
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.secretName }}
+                  key: AZURE_CLIENT_ID
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.secretName }}
+                  key: AZURE_CLIENT_SECRET
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.secretName }}
+                  key: AZURE_TENANT_ID
+            {{- else if and .Values.auth.clientId .Values.auth.clientSecret .Values.auth.tenantId }}
+            # Use direct values for authentication (not recommended for production)
+            - name: AZURE_CLIENT_ID
+              value: {{ .Values.auth.clientId | quote }}
+            - name: AZURE_CLIENT_SECRET
+              value: {{ .Values.auth.clientSecret | quote }}
+            - name: AZURE_TENANT_ID
+              value: {{ .Values.auth.tenantId | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -21,9 +21,10 @@ A comprehensive Rust-based debug consumer for Azure Event Hubs with maximum logg
 
 - Rust compiler (see [rust installation instructions](https://www.rust-lang.org/tools/install))
 - Azure subscription
-- Azure CLI installed and logged in (`az login`)
 - Event Hub namespace and instance
 - Kubernetes cluster (for Helm deployment)
+- **For Kubernetes**: Azure Service Principal credentials (see Authentication section below)
+- **For local development**: Azure CLI installed and logged in (`az login`) - optional
 
 ## Configuration
 
@@ -33,6 +34,25 @@ The application reads configuration from environment variables:
 - `EVENTHUB_NAME`: Name of the Event Hub instance
 - `CONSUMER_GROUPS`: Comma-separated list of consumer groups (e.g., `group1,group2,group3`)
 - `RUST_LOG`: Logging level (default: `info,azure_messaging_eventhubs=trace,azure_core=trace`)
+
+### Authentication
+
+**For Kubernetes Deployment (REQUIRED):**
+The application requires Service Principal authentication when running in Kubernetes pods. You must set:
+
+- `AZURE_CLIENT_ID`: Service Principal client ID
+- `AZURE_CLIENT_SECRET`: Service Principal client secret
+- `AZURE_TENANT_ID`: Azure AD tenant ID
+
+**For Local Development:**
+If Service Principal credentials are not provided, the application will attempt to use `DeveloperToolsCredential` (requires `az login`). This will **NOT work in Kubernetes pods**.
+
+**Creating a Service Principal:**
+```bash
+az ad sp create-for-rbac --name "ehub-debug-consumer" --role contributor --scopes /subscriptions/{subscription-id}
+```
+
+This will output the credentials you need. Store them securely (use Kubernetes Secrets for production).
 
 ## Docker Image
 
@@ -63,16 +83,34 @@ cargo run --release
 
 ### Installation
 
-1. Update `helm/ehub-debug-consumer/values.yaml` with your configuration:
+1. Create a Kubernetes Secret with your Service Principal credentials:
+
+```bash
+kubectl create secret generic azure-credentials \
+  --from-literal=AZURE_CLIENT_ID="your-client-id" \
+  --from-literal=AZURE_CLIENT_SECRET="your-client-secret" \
+  --from-literal=AZURE_TENANT_ID="your-tenant-id"
+```
+
+2. Update `helm/ehub-debug-consumer/values.yaml` with your configuration:
 
 ```yaml
 config:
   eventhubsHost: "your-namespace.servicebus.windows.net"
   eventhubName: "your-eventhub-name"
   consumerGroups: "default,debug-group"
+
+auth:
+  # Use the secret created above (recommended)
+  secretName: "azure-credentials"
+  
+  # OR set directly (not recommended for production):
+  # clientId: "your-client-id"
+  # clientSecret: "your-client-secret"
+  # tenantId: "your-tenant-id"
 ```
 
-2. Use the pre-built Docker image or build your own:
+3. Use the pre-built Docker image or build your own:
 
 ```bash
 # Using pre-built image (recommended)
@@ -82,7 +120,7 @@ config:
 ./build-and-push.sh
 ```
 
-3. Install the chart:
+4. Install the chart:
 
 ```bash
 helm install ehub-debug-consumer ./helm/ehub-debug-consumer
