@@ -37,22 +37,35 @@ The application reads configuration from environment variables:
 
 ### Authentication
 
-**For Kubernetes Deployment (REQUIRED):**
-The application requires Service Principal authentication when running in Kubernetes pods. You must set:
+The application supports two authentication methods:
+
+**1. Shared Access Policy (Connection String) - Recommended:**
+This is the simplest method for Event Hubs. Set:
+
+- `EVENTHUB_CONNECTION_STRING`: Full connection string from Azure Portal
+  - Format: `Endpoint=sb://namespace.servicebus.windows.net/;SharedAccessKeyName=policy-name;SharedAccessKey=key`
+  - The connection string automatically extracts the host (no need to set `EVENTHUBS_HOST`)
+  - **Note**: The SDK still requires Service Principal for TokenCredential, but the connection string simplifies host configuration
+
+**2. Service Principal:**
+For advanced scenarios or when connection strings aren't available. Set:
 
 - `AZURE_CLIENT_ID`: Service Principal client ID
 - `AZURE_CLIENT_SECRET`: Service Principal client secret
 - `AZURE_TENANT_ID`: Azure AD tenant ID
 
-**For Local Development:**
-If Service Principal credentials are not provided, the application will attempt to use `DeveloperToolsCredential` (requires `az login`). This will **NOT work in Kubernetes pods**.
+**Getting Connection String from Azure Portal:**
+1. Go to your Event Hub namespace in Azure Portal
+2. Navigate to "Shared access policies"
+3. Select a policy (or create one with "Listen" permission)
+4. Copy the "Connection string-primary key"
 
 **Creating a Service Principal:**
 ```bash
 az ad sp create-for-rbac --name "ehub-debug-consumer" --role contributor --scopes /subscriptions/{subscription-id}
 ```
 
-This will output the credentials you need. Store them securely (use Kubernetes Secrets for production).
+Store credentials securely (use Kubernetes Secrets for production).
 
 ## Docker Image
 

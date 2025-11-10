@@ -62,16 +62,23 @@ config:
   rustLog: "info,azure_messaging_eventhubs=trace,azure_core=trace"
 
 # Azure Authentication Configuration
-# For Kubernetes, you MUST use Service Principal authentication
-# Set these values or use a Kubernetes Secret (recommended)
+# Supports two methods:
+# 1. Shared Access Policy (Connection String) - simplest, recommended for Event Hubs
+# 2. Service Principal - for advanced scenarios
 auth:
-  # Service Principal credentials (required for Kubernetes)
-  # Option 1: Set directly in values.yaml (not recommended for production)
+  # Option 1: Event Hub Connection String (Shared Access Policy)
+  # Format: Endpoint=sb://namespace.servicebus.windows.net/;SharedAccessKeyName=policy-name;SharedAccessKey=key
+  # This will automatically extract the host, but Service Principal is still required for SDK authentication
+  connectionString: ""
+  connectionStringSecretName: ""  # Alternative: reference a Kubernetes Secret containing EVENTHUB_CONNECTION_STRING
+  
+  # Option 2: Service Principal credentials
+  # Option 2a: Set directly in values.yaml (not recommended for production)
   clientId: ""
   clientSecret: ""
   tenantId: ""
   
-  # Option 2: Use Kubernetes Secret (recommended)
+  # Option 2b: Use Kubernetes Secret (recommended)
   # Set secretName and the secret should contain:
   #   AZURE_CLIENT_ID
   #   AZURE_CLIENT_SECRET

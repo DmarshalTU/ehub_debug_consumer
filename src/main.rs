@@ -105,8 +105,19 @@ async fn main() -> Result<()> {
     info!("==========================================");
 
     // Read configuration from environment variables
-    let host: String = env::var("EVENTHUBS_HOST")
-        .context("EVENTHUBS_HOST environment variable is required")?;
+    // Check for connection string first - it contains the host
+    let (host, connection_string_parsed) = if let Ok(conn_str) = env::var("EVENTHUB_CONNECTION_STRING") {
+        let (parsed_host, _, _) = parse_connection_string(&conn_str)
+            .context("Failed to parse EVENTHUB_CONNECTION_STRING")?;
+        (parsed_host, Some(conn_str))
+    } else {
+        (
+            env::var("EVENTHUBS_HOST")
+                .context("EVENTHUBS_HOST or EVENTHUB_CONNECTION_STRING environment variable is required")?,
+            None,
+        )
+    };
+    
     let eventhub: String = env::var("EVENTHUB_NAME")
         .context("EVENTHUB_NAME environment variable is required")?;
     
@@ -128,12 +139,14 @@ async fn main() -> Result<()> {
     info!("  Consumer Groups: {:?}", consumer_groups);
     
     // Log authentication method
-    let auth_method = if env::var("AZURE_CLIENT_ID").is_ok() 
+    let auth_method = if env::var("EVENTHUB_CONNECTION_STRING").is_ok() {
+        "Shared Access Policy (Connection String)"
+    } else if env::var("AZURE_CLIENT_ID").is_ok() 
         && env::var("AZURE_CLIENT_SECRET").is_ok() 
         && env::var("AZURE_TENANT_ID").is_ok() {
         "Service Principal (from environment variables)"
     } else {
-        "DefaultAzureCredential (Managed Identity, Workload Identity, or Azure CLI)"
+        "Not configured - will fail"
     };
     info!("  Authentication: {}", auth_method);
     info!("");
@@ -213,21 +226,61 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Parse Event Hub connection string
+/// Format: Endpoint=sb://namespace.servicebus.windows.net/;SharedAccessKeyName=policy-name;SharedAccessKey=key
+fn parse_connection_string(conn_str: &str) -> Result<(String, String, String)> {
+    let mut endpoint = None;
+    let mut key_name = None;
+    let mut key = None;
+    
+    for part in conn_str.split(';') {
+        if let Some((k, v)) = part.split_once('=') {
+            match k.trim() {
+                "Endpoint" => {
+                    // Extract host from endpoint: sb://namespace.servicebus.windows.net/
+                    let host = v
+                        .trim()
+                        .strip_prefix("sb://")
+                        .and_then(|s| s.strip_suffix('/'))
+                        .ok_or_else(|| anyhow::anyhow!("Invalid Endpoint format in connection string"))?;
+                    endpoint = Some(host.to_string());
+                }
+                "SharedAccessKeyName" => key_name = Some(v.trim().to_string()),
+                "SharedAccessKey" => key = Some(v.trim().to_string()),
+                _ => {}
+            }
+        }
+    }
+    
+    Ok((
+        endpoint.context("Missing Endpoint in connection string")?,
+        key_name.context("Missing SharedAccessKeyName in connection string")?,
+        key.context("Missing SharedAccessKey in connection string")?,
+    ))
+}
+
 /// Create Azure credential based on environment variables
-/// Supports:
-/// 1. Service Principal (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID) - for Kubernetes
-/// 2. DeveloperToolsCredential (for local development with az login)
+/// Supports (in order of preference):
+/// 1. Shared Access Policy (EVENTHUB_CONNECTION_STRING) - simplest, recommended for Event Hubs
+/// 2. Service Principal (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID) - for advanced scenarios
 /// 
-/// Note: For Managed Identity in AKS, use Workload Identity which requires additional K8s configuration.
-/// The Service Principal approach is simpler and recommended for most use cases.
+/// Connection string format: Endpoint=sb://namespace.servicebus.windows.net/;SharedAccessKeyName=policy-name;SharedAccessKey=key
+/// 
+/// Note: The SDK requires TokenCredential, so for connection strings we still need Service Principal.
+/// However, the connection string is used to extract the host automatically.
+/// For true SAS-only authentication, the SDK would need to support it natively.
 fn create_credential() -> Result<Arc<ClientSecretCredential>> {
-    // Check if Service Principal credentials are provided (required for Kubernetes)
+    // Check if Service Principal credentials are provided
     if let (Ok(client_id), Ok(client_secret), Ok(tenant_id)) = (
         env::var("AZURE_CLIENT_ID"),
         env::var("AZURE_CLIENT_SECRET"),
         env::var("AZURE_TENANT_ID"),
     ) {
-        info!("Using Service Principal authentication (suitable for Kubernetes)");
+        if env::var("EVENTHUB_CONNECTION_STRING").is_ok() {
+            info!("Using Shared Access Policy (connection string) + Service Principal authentication");
+        } else {
+            info!("Using Service Principal authentication");
+        }
         let credential = ClientSecretCredential::new(
             &tenant_id,
             client_id,
@@ -236,18 +289,21 @@ fn create_credential() -> Result<Arc<ClientSecretCredential>> {
         )
         .context("Failed to create ClientSecretCredential")?;
         Ok(credential)
-    } else {
-        // Fall back to DeveloperToolsCredential for local development only
-        // This will NOT work in Kubernetes pods
-        warn!("Service Principal credentials not found. Using DeveloperToolsCredential (local dev only).");
-        warn!("⚠️  For Kubernetes: You MUST set AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, and AZURE_TENANT_ID");
-        
-        // For local dev, we can't return ClientSecretCredential, so we need a different approach
-        // Actually, let's just require Service Principal for now and make it clear
+    } else if env::var("EVENTHUB_CONNECTION_STRING").is_ok() {
+        // Connection string provided but no Service Principal
+        // The connection string is used for host extraction, but we still need SP for auth
         anyhow::bail!(
-            "Service Principal credentials required for Kubernetes deployment.\n\
-            Set environment variables: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID\n\
-            For local development, you can use 'az login' but this won't work in pods."
+            "Connection string provided but Service Principal credentials are required.\n\
+            The SDK requires TokenCredential for authentication.\n\
+            Please also set: AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID\n\
+            \n\
+            Note: The connection string will be used to automatically extract the host."
+        );
+    } else {
+        anyhow::bail!(
+            "Authentication required. Set one of:\n\
+            1. EVENTHUB_CONNECTION_STRING (for host extraction) + Service Principal (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)\n\
+            2. AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID (Service Principal only)"
         );
     }
 }

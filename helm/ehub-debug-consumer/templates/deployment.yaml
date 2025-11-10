@@ -44,8 +44,20 @@ spec:
               value: {{ .Values.config.consumerGroups | quote }}
             - name: RUST_LOG
               value: {{ .Values.config.rustLog | quote }}
+            {{- if .Values.auth.connectionStringSecretName }}
+            # Use connection string from Kubernetes Secret
+            - name: EVENTHUB_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.auth.connectionStringSecretName }}
+                  key: EVENTHUB_CONNECTION_STRING
+            {{- else if .Values.auth.connectionString }}
+            # Use connection string directly (not recommended for production)
+            - name: EVENTHUB_CONNECTION_STRING
+              value: {{ .Values.auth.connectionString | quote }}
+            {{- end }}
             {{- if .Values.auth.secretName }}
-            # Use Kubernetes Secret for authentication (recommended)
+            # Use Kubernetes Secret for Service Principal (recommended)
             - name: AZURE_CLIENT_ID
               valueFrom:
                 secretKeyRef:
@@ -62,7 +74,7 @@ spec:
                   name: {{ .Values.auth.secretName }}
                   key: AZURE_TENANT_ID
             {{- else if and .Values.auth.clientId .Values.auth.clientSecret .Values.auth.tenantId }}
-            # Use direct values for authentication (not recommended for production)
+            # Use direct values for Service Principal (not recommended for production)
             - name: AZURE_CLIENT_ID
               value: {{ .Values.auth.clientId | quote }}
             - name: AZURE_CLIENT_SECRET
