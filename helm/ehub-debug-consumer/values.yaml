@@ -60,7 +60,7 @@ config:
   eventhubName: ""
   consumerGroups: "default"
   minPartition: 0  # Starting partition ID to scan
-  maxPartition: 31  # Ending partition ID to scan (adjust based on your Event Hub partition count)
+  maxPartition: 7  # Ending partition ID to scan (adjust based on your Event Hub partition count - most have 1-8 partitions)
   rustLog: "info,azure_messaging_eventhubs=warn,azure_core=warn"
 
 # Azure Authentication Configuration

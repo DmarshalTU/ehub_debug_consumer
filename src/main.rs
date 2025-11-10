@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
     let max_partition = env::var("MAX_PARTITION")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(31);
+        .unwrap_or(7);  // Default to 7 (most Event Hubs have 1-8 partitions)
     let min_partition = env::var("MIN_PARTITION")
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
@@ -149,7 +149,11 @@ async fn main() -> Result<()> {
     info!("  Event Hub Host: {}", host);
     info!("  Event Hub Name: {}", eventhub);
     info!("  Consumer Groups: {:?}", consumer_groups);
-    info!("  Partition Range: {}-{} (set MIN_PARTITION/MAX_PARTITION to override)", min_partition, max_partition);
+    info!("  Partition Range: {}-{} (set MIN_PARTITION/MAX_PARTITION env vars to override)", min_partition, max_partition);
+    if max_partition > 7 {
+        warn!("  ⚠️  MAX_PARTITION is set to {} - this may try non-existent partitions!", max_partition);
+        warn!("     Most Event Hubs have 1-8 partitions. Set MAX_PARTITION=7 if you have 8 partitions (0-7)");
+    }
     
     // Log authentication method
     let auth_method = if env::var("EVENTHUB_CONNECTION_STRING").is_ok() {
@@ -641,6 +645,20 @@ async fn consume_from_partition(
                                    error_msg.contains("UnauthorizedAccess") ||
                                    error_msg.contains("Listen") ||
                                    error_msg.contains("claim");
+                
+                let is_partition_not_found = error_msg.contains("404") ||
+                                            error_msg.contains("could not be found") ||
+                                            error_msg.contains("ResourceMgrExceptions");
+                
+                // Partition not found (404) is expected - just log once and continue
+                if is_partition_not_found {
+                    warn!(
+                        "[{}:{}] Partition does not exist (this is normal - partition may not be configured)",
+                        consumer_group, partition
+                    );
+                    // Don't record as error, just return
+                    return Ok(());
+                }
                 
                 if is_auth_error {
                     error!("");

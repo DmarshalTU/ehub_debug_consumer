@@ -45,7 +45,7 @@ spec:
             - name: MIN_PARTITION
               value: {{ .Values.config.minPartition | default 0 | quote }}
             - name: MAX_PARTITION
-              value: {{ .Values.config.maxPartition | default 31 | quote }}
+              value: {{ .Values.config.maxPartition | default 7 | quote }}
             - name: RUST_LOG
               value: {{ .Values.config.rustLog | quote }}
             {{- if .Values.auth.connectionStringSecretName }}
