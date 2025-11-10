@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
+// ABSOLUTE HARD LIMIT - never scan beyond partition 7
+const MAX_PARTITION_LIMIT: u32 = 7;
+
 #[derive(Debug, Clone)]
 struct EventStats {
     partition: String,
@@ -179,11 +182,11 @@ async fn run() -> Result<()> {
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(7);  // Default to 7 (most Event Hubs have 1-8 partitions)
     
-    // HARD CAP at 7 to prevent scanning non-existent partitions
-    let max_partition = if max_partition_raw > 7 {
-        eprintln!("[ehub-debug-consumer] WARNING: MAX_PARTITION was {} but capping at 7 to prevent errors!", max_partition_raw);
-        warn!("MAX_PARTITION was {} but capping at 7 to prevent scanning non-existent partitions", max_partition_raw);
-        7
+    // HARD CAP at MAX_PARTITION_LIMIT to prevent scanning non-existent partitions
+    let max_partition = if max_partition_raw > MAX_PARTITION_LIMIT {
+        eprintln!("[ehub-debug-consumer] WARNING: MAX_PARTITION was {} but capping at {} to prevent errors!", max_partition_raw, MAX_PARTITION_LIMIT);
+        warn!("MAX_PARTITION was {} but capping at {} to prevent scanning non-existent partitions", max_partition_raw, MAX_PARTITION_LIMIT);
+        MAX_PARTITION_LIMIT
     } else {
         max_partition_raw
     };
@@ -220,10 +223,10 @@ async fn run() -> Result<()> {
     info!("  Partition Range: {}-{} (will scan partitions {}-{})", min_partition, max_partition, min_partition, max_partition);
     info!("  ═══════════════════════════════════════════════════════════════════════════════");
     
-    if max_partition > 7 {
-        eprintln!("[ehub-debug-consumer] WARNING: MAX_PARTITION is {} (should be 7 for partitions 0-7)!", max_partition);
+    if max_partition > MAX_PARTITION_LIMIT {
+        eprintln!("[ehub-debug-consumer] WARNING: MAX_PARTITION is {} (should be {} for partitions 0-{})!", max_partition, MAX_PARTITION_LIMIT, MAX_PARTITION_LIMIT);
         warn!("  ⚠️  MAX_PARTITION is set to {} - this may try non-existent partitions!", max_partition);
-        warn!("     Most Event Hubs have 1-8 partitions. Set MAX_PARTITION=7 if you have 8 partitions (0-7)");
+        warn!("     Most Event Hubs have 1-8 partitions. Set MAX_PARTITION={} if you have 8 partitions (0-{})", MAX_PARTITION_LIMIT, MAX_PARTITION_LIMIT);
     }
     
     // Log authentication method
@@ -252,9 +255,17 @@ async fn run() -> Result<()> {
         let host_clone = host.clone();
         let eventhub_clone = eventhub.clone();
         let stats_clone = stats.clone();
+        // ENFORCE HARD LIMIT before passing to function
         let min_partition_clone = min_partition;
-        let max_partition_clone = max_partition;
+        let max_partition_clone = if max_partition > MAX_PARTITION_LIMIT {
+            eprintln!("[ehub-debug-consumer] CRITICAL: max_partition is {} but capping to {} before spawning task!", max_partition, MAX_PARTITION_LIMIT);
+            error!("CRITICAL: max_partition is {} but capping to {} before spawning task!", max_partition, MAX_PARTITION_LIMIT);
+            MAX_PARTITION_LIMIT
+        } else {
+            max_partition
+        };
 
+        eprintln!("[ehub-debug-consumer] Spawning task for consumer group '{}' with partition range {}-{}", consumer_group, min_partition_clone, max_partition_clone);
         let handle = tokio::spawn(async move {
             if let Err(e) = consume_from_group(
                 host_clone,
@@ -441,21 +452,36 @@ async fn consume_from_group(
     eprintln!("[ehub-debug-consumer] [{}] Discovering partitions (range: {}-{})...", consumer_group, min_partition, max_partition);
     info!("[{}] Discovering partitions (range: {}-{})...", consumer_group, min_partition, max_partition);
     
-    // ENFORCE HARD LIMIT - never scan beyond partition 7
-    let effective_max = if max_partition > 7 {
-        eprintln!("[ehub-debug-consumer] [{}] WARNING: max_partition is {} but enforcing limit of 7!", consumer_group, max_partition);
-        warn!("[{}] max_partition is {} but enforcing limit of 7 to prevent errors", consumer_group, max_partition);
-        7
+    // ENFORCE HARD LIMIT - never scan beyond MAX_PARTITION_LIMIT
+    let effective_max = if max_partition > MAX_PARTITION_LIMIT {
+        eprintln!("[ehub-debug-consumer] [{}] WARNING: max_partition is {} but enforcing limit of {}!", consumer_group, max_partition, MAX_PARTITION_LIMIT);
+        warn!("[{}] max_partition is {} but enforcing limit of {} to prevent errors", consumer_group, max_partition, MAX_PARTITION_LIMIT);
+        MAX_PARTITION_LIMIT
     } else {
         max_partition
     };
     
     let mut partition_tasks = Vec::new();
     
-    // Try to open receivers for partitions in the specified range
-    eprintln!("[ehub-debug-consumer] [{}] Will scan partitions {}-{}", consumer_group, min_partition, effective_max);
-    for partition_id in min_partition..=effective_max {
-        eprintln!("[ehub-debug-consumer] [{}] Attempting partition {}", consumer_group, partition_id);
+    // ABSOLUTE HARD LIMIT - never exceed MAX_PARTITION_LIMIT
+    let absolute_max = effective_max.min(MAX_PARTITION_LIMIT);
+    if absolute_max != effective_max {
+        eprintln!("[ehub-debug-consumer] [{}] CRITICAL: effective_max was {} but forcing to {}!", consumer_group, effective_max, MAX_PARTITION_LIMIT);
+        error!("[{}] CRITICAL: effective_max was {} but forcing to {}!", consumer_group, effective_max, MAX_PARTITION_LIMIT);
+    }
+    
+    eprintln!("[ehub-debug-consumer] [{}] Will scan partitions {}-{} (HARD LIMIT: {})", consumer_group, min_partition, absolute_max, MAX_PARTITION_LIMIT);
+    info!("[{}] Will scan partitions {}-{} (HARD LIMIT: {})", consumer_group, min_partition, absolute_max, MAX_PARTITION_LIMIT);
+    
+    for partition_id in min_partition..=absolute_max {
+        // Double-check we're not exceeding MAX_PARTITION_LIMIT
+        if partition_id > MAX_PARTITION_LIMIT {
+            eprintln!("[ehub-debug-consumer] [{}] ERROR: Attempted to scan partition {} which exceeds limit of {}! Skipping.", consumer_group, partition_id, MAX_PARTITION_LIMIT);
+            error!("[{}] ERROR: Attempted to scan partition {} which exceeds limit of {}! Skipping.", consumer_group, partition_id, MAX_PARTITION_LIMIT);
+            continue;
+        }
+        
+        eprintln!("[ehub-debug-consumer] [{}] Attempting partition {} (limit: 7)", consumer_group, partition_id);
         let partition_str = partition_id.to_string();
         let host_clone = host.to_string();
         let eventhub_clone = eventhub.to_string();
@@ -753,10 +779,19 @@ async fn consume_from_partition(
                 
                 // Partition not found (404) is expected - just log once and continue
                 if is_partition_not_found {
-                    warn!(
-                        "[{}:{}] Partition does not exist (this is normal - partition may not be configured)",
-                        consumer_group, partition
-                    );
+                    // Check if this partition is beyond our expected range
+                    if let Ok(part_num) = partition.parse::<u32>() {
+                        if part_num > MAX_PARTITION_LIMIT {
+                            eprintln!("[ehub-debug-consumer] [{}:{}] ERROR: Got 404 for partition {} which is > {}! This should not happen - check MAX_PARTITION env var!", consumer_group, partition, part_num, MAX_PARTITION_LIMIT);
+                            error!("[{}:{}] ERROR: Got 404 for partition {} which exceeds limit of {}! Check MAX_PARTITION configuration.", consumer_group, partition, part_num, MAX_PARTITION_LIMIT);
+                            error!("[{}:{}] This means the code tried to access a partition beyond the hard limit - there's a bug!", consumer_group, partition);
+                        } else {
+                            warn!(
+                                "[{}:{}] Partition does not exist (this is normal - partition may not be configured)",
+                                consumer_group, partition
+                            );
+                        }
+                    }
                     // Don't record as error, just return
                     return Ok(());
                 }
