@@ -470,10 +470,26 @@ async fn consume_from_group(
         error!("[{}] CRITICAL: effective_max was {} but forcing to {}!", consumer_group, effective_max, MAX_PARTITION_LIMIT);
     }
     
+    // FINAL CHECK: absolute_max MUST be <= MAX_PARTITION_LIMIT
+    assert!(absolute_max <= MAX_PARTITION_LIMIT, "absolute_max ({}) must be <= MAX_PARTITION_LIMIT ({})", absolute_max, MAX_PARTITION_LIMIT);
+    
     eprintln!("[ehub-debug-consumer] [{}] Will scan partitions {}-{} (HARD LIMIT: {})", consumer_group, min_partition, absolute_max, MAX_PARTITION_LIMIT);
+    eprintln!("[ehub-debug-consumer] [{}] Loop will iterate: {}..={} (inclusive range)", consumer_group, min_partition, absolute_max);
     info!("[{}] Will scan partitions {}-{} (HARD LIMIT: {})", consumer_group, min_partition, absolute_max, MAX_PARTITION_LIMIT);
     
-    for partition_id in min_partition..=absolute_max {
+    // Build the partition list explicitly to avoid any range issues
+    let mut partition_list: Vec<u32> = Vec::new();
+    for pid in min_partition..=absolute_max {
+        if pid <= MAX_PARTITION_LIMIT {
+            partition_list.push(pid);
+        }
+    }
+    
+    eprintln!("[ehub-debug-consumer] [{}] Partition list: {:?} (total: {})", consumer_group, partition_list, partition_list.len());
+    info!("[{}] Will attempt to open receivers for partitions: {:?}", consumer_group, partition_list);
+    info!("[{}] Note: 404 errors for non-existent partitions are normal and expected", consumer_group);
+    
+    for partition_id in partition_list {
         // Double-check we're not exceeding MAX_PARTITION_LIMIT
         if partition_id > MAX_PARTITION_LIMIT {
             eprintln!("[ehub-debug-consumer] [{}] ERROR: Attempted to scan partition {} which exceeds limit of {}! Skipping.", consumer_group, partition_id, MAX_PARTITION_LIMIT);
@@ -481,8 +497,24 @@ async fn consume_from_group(
             continue;
         }
         
-        eprintln!("[ehub-debug-consumer] [{}] Attempting partition {} (limit: 7)", consumer_group, partition_id);
+        // CRITICAL: Panic if we ever try to open a partition > 7 - this should be impossible
+        if partition_id > MAX_PARTITION_LIMIT {
+            eprintln!("[ehub-debug-consumer] [{}] FATAL: Attempted to open partition {} which exceeds limit of {}!", consumer_group, partition_id, MAX_PARTITION_LIMIT);
+            eprintln!("[ehub-debug-consumer] [{}] FATAL: min_partition={}, max_partition={}, effective_max={}, absolute_max={}", 
+                consumer_group, min_partition, max_partition, effective_max, absolute_max);
+            panic!("FATAL: Attempted to open partition {} which exceeds hard limit of {}! This is a bug!", partition_id, MAX_PARTITION_LIMIT);
+        }
+        
+        eprintln!("[ehub-debug-consumer] [{}] Attempting partition {} (limit: {})", consumer_group, partition_id, MAX_PARTITION_LIMIT);
         let partition_str = partition_id.to_string();
+        
+        // Double-check the partition string is valid
+        if let Ok(part_num) = partition_str.parse::<u32>() {
+            if part_num > MAX_PARTITION_LIMIT {
+                eprintln!("[ehub-debug-consumer] [{}] FATAL: Partition string '{}' parses to {} which exceeds limit!", consumer_group, partition_str, MAX_PARTITION_LIMIT);
+                panic!("FATAL: Partition string '{}' exceeds hard limit of {}! This is a bug!", partition_str, MAX_PARTITION_LIMIT);
+            }
+        }
         let host_clone = host.to_string();
         let eventhub_clone = eventhub.to_string();
         let consumer_group_clone = consumer_group.to_string();
@@ -529,6 +561,14 @@ async fn consume_from_group(
                 }
             };
 
+            // CRITICAL: Check partition before opening receiver
+            if let Ok(part_num) = partition_str.parse::<u32>() {
+                if part_num > MAX_PARTITION_LIMIT {
+                    eprintln!("[ehub-debug-consumer] [{}] FATAL: About to open receiver for partition {} which exceeds limit of {}!", consumer_group_clone, partition_str, MAX_PARTITION_LIMIT);
+                    panic!("FATAL: About to open receiver for partition {} which exceeds hard limit of {}! This is a bug!", partition_str, MAX_PARTITION_LIMIT);
+                }
+            }
+            
             match partition_consumer
                 .open_receiver_on_partition(
                     partition_str.clone(),
@@ -543,6 +583,14 @@ async fn consume_from_group(
                 .await
             {
                 Ok(receiver) => {
+                    // CRITICAL: Double-check after opening
+                    if let Ok(part_num) = partition_str.parse::<u32>() {
+                        if part_num > MAX_PARTITION_LIMIT {
+                            eprintln!("[ehub-debug-consumer] [{}] FATAL: Successfully opened receiver for partition {} which exceeds limit of {}!", consumer_group_clone, partition_str, MAX_PARTITION_LIMIT);
+                            panic!("FATAL: Successfully opened receiver for partition {} which exceeds hard limit of {}! This is a bug!", partition_str, MAX_PARTITION_LIMIT);
+                        }
+                    }
+                    
                     info!(
                         "[{}] ✓ Successfully opened receiver for partition {}",
                         consumer_group_clone, partition_str
@@ -582,11 +630,26 @@ async fn consume_from_group(
                     }
                 }
                 Err(e) => {
-                    // Partition might not exist, which is fine
-                    warn!(
-                        "[{}] Could not open receiver for partition {}: {:?}",
-                        consumer_group_clone, partition_str, e
-                    );
+                    // Check if this is a 404 (partition doesn't exist)
+                    let error_msg = format!("{:?}", e);
+                    let is_partition_not_found = error_msg.contains("404") ||
+                                                error_msg.contains("could not be found") ||
+                                                error_msg.contains("ResourceMgrExceptions");
+                    
+                    if is_partition_not_found {
+                        // Partition doesn't exist - this is NORMAL and EXPECTED
+                        // Event Hubs may not have all partitions 0-7 configured
+                        info!(
+                            "[{}] Partition {} does not exist (this is normal - Event Hub may not have this partition configured)",
+                            consumer_group_clone, partition_str
+                        );
+                    } else {
+                        // Some other error - log as warning
+                        warn!(
+                            "[{}] Could not open receiver for partition {}: {:?}",
+                            consumer_group_clone, partition_str, e
+                        );
+                    }
                 }
             }
         });
@@ -786,13 +849,21 @@ async fn consume_from_partition(
                             error!("[{}:{}] ERROR: Got 404 for partition {} which exceeds limit of {}! Check MAX_PARTITION configuration.", consumer_group, partition, part_num, MAX_PARTITION_LIMIT);
                             error!("[{}:{}] This means the code tried to access a partition beyond the hard limit - there's a bug!", consumer_group, partition);
                         } else {
-                            warn!(
-                                "[{}:{}] Partition does not exist (this is normal - partition may not be configured)",
-                                consumer_group, partition
+                            // Partition is in valid range (0-7) but doesn't exist - this is NORMAL
+                            // Event Hubs may not have all partitions configured
+                            info!(
+                                "[{}:{}] Partition {} does not exist (this is normal - Event Hub may not have this partition configured)",
+                                consumer_group, partition, part_num
                             );
                         }
+                    } else {
+                        // Couldn't parse partition number, but it's a 404 so it's probably fine
+                        info!(
+                            "[{}:{}] Partition does not exist (this is normal - Event Hub may not have this partition configured)",
+                            consumer_group, partition
+                        );
                     }
-                    // Don't record as error, just return
+                    // Don't record as error, just return gracefully
                     return Ok(());
                 }
                 
